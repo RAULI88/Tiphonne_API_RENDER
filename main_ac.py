@@ -3,7 +3,7 @@ from flask_sqlalchemy import SQLAlchemy
 import os
 from dotenv import load_dotenv
 from sqlalchemy import select  # Necesario para consultas modernas
-from flask_bcrypt import Bcrypt # Necesario para hashear contraseñas
+from flask_bcrypt import Bcrypt  # Necesario para hashear contraseñas
 
 # ==============================================
 # 1. CARGA DE VARIABLES DE ENTORNO
@@ -42,7 +42,9 @@ class User(db.Model):
     app_1 = db.Column(db.String(50), nullable=False)
     app_2 = db.Column(db.String(50))
     correo = db.Column(db.String(120), unique=True, nullable=False)
-    contraseña = db.Column(db.String(255), nullable=False)  # Guarda el hash de Bcrypt
+
+    # CLAVE: Columna que coincide con la DB (contrasena, sin tilde)
+    contrasena = db.Column(db.String(255), nullable=False)
 
     def to_dict(self):
         """Método para serializar el objeto a diccionario/JSON"""
@@ -91,7 +93,7 @@ def get_user(id_user):
 def create_user():
     data = request.get_json()
 
-    # 1. Validar campos obligatorios
+    # 1. Validar campos obligatorios (el JSON del cliente sigue usando 'contraseña')
     required_fields = ['nom_1', 'app_1', 'correo', 'contraseña']
     if any(field not in data for field in required_fields):
         return jsonify({"error": "Faltan campos obligatorios: nom_1, app_1, correo, contraseña"}), 400
@@ -107,7 +109,8 @@ def create_user():
             app_1=data["app_1"],
             app_2=data.get("app_2"),
             correo=data["correo"],
-            contraseña=hashed_password  # Guarda el hash
+            # CLAVE: Aquí se asigna al nombre de columna correcto (contrasena)
+            contrasena=hashed_password
         )
 
         # 4. Guardar en la base de datos
@@ -119,8 +122,9 @@ def create_user():
 
     except Exception as e:
         db.session.rollback()
-        # Devuelve error si, por ejemplo, el correo ya existe
-        return jsonify({"error": "Error al crear el usuario. ¿El correo ya existe?", "detalle": str(e)}), 500
+        # Devuelve error si, por ejemplo, el correo ya existe o hay un error de conexión
+        print(f"Database error: {e}")
+        return jsonify({"error": "Error al crear el usuario. Revise la consola del servidor.", "detalle": str(e)}), 500
 
 
 if __name__ == '__main__':
@@ -129,8 +133,6 @@ if __name__ == '__main__':
         # Crea las tablas si no existen (útil para la primera vez)
         db.create_all()
 
-    # >>> AJUSTE CLAVE PARA HOSTING EXTERNO (RENDER) <<<
     # Obtener el puerto de la variable de entorno PORT (lo asigna Render)
     port = int(os.environ.get('PORT', 5000))
-    # La app debe escuchar en todas las interfaces (0.0.0.0) y en el puerto asignado.
     app.run(host='0.0.0.0', port=port, debug=True)
