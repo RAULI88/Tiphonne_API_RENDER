@@ -2,19 +2,17 @@ from flask import Flask, jsonify, request
 from flask_sqlalchemy import SQLAlchemy
 import os
 from dotenv import load_dotenv
-from sqlalchemy import select  # Necesario para consultas modernas
+from sqlalchemy import select, text  # Necesario para consultas modernas y SQL puro
 from flask_bcrypt import Bcrypt  # Necesario para hashear contraseñas
 
 # ==============================================
 # 1. CARGA DE VARIABLES DE ENTORNO
-# Carga variables del .env (SOLO en desarrollo local)
 load_dotenv()
 # ==============================================
 
 app = Flask(__name__)
 
 # --- 2. CONFIGURACIÓN DE CONEXIÓN ---
-# Render/Railway inyectarán estas variables
 DB_USER = os.environ.get("MYSQLUSER")
 DB_PASS = os.environ.get("MYSQLPASSWORD")
 DB_HOST = os.environ.get("MYSQLHOST")
@@ -30,6 +28,8 @@ db = SQLAlchemy(app)
 bcrypt = Bcrypt(app)  # Inicializa Bcrypt
 
 
+
+
 # --- 3. DEFINICIÓN DEL MODELO ---
 class User(db.Model):
     # Nombre exacto de tu tabla en MySQL
@@ -42,8 +42,7 @@ class User(db.Model):
     app_1 = db.Column(db.String(50), nullable=False)
     app_2 = db.Column(db.String(50))
     correo = db.Column(db.String(120), unique=True, nullable=False)
-
-    # CLAVE: Columna que coincide con la DB (contrasena, sin tilde)
+    # CLAVE: Columna que coincide con el nombre de la DB (contrasena, sin tilde)
     contrasena = db.Column(db.String(255), nullable=False)
 
     def to_dict(self):
@@ -55,23 +54,54 @@ class User(db.Model):
             "apellido1": self.app_1,
             "apellido2": self.app_2,
             "correo": self.correo,
-            # La contraseña NO se devuelve por seguridad
         }
 
 
 # ======================================================
-# RUTAS DE LA API (CRUD)
+# RUTAS DE LA API (CRUD Y AUTENTICACIÓN)
 # ======================================================
 
 @app.route('/')
 def root():
-    return jsonify("Hello World")
+    return jsonify("Hola jotos")
+
+
+# RUTA POST: INICIAR SESIÓN
+@app.route("/login", methods=["POST"])
+def login():
+    data = request.get_json()
+
+    # 1. Validar que se recibieron correo y contraseña
+    if not data or 'correo' not in data or 'contraseña' not in data:
+        return jsonify({"error": "Faltan campos (correo, contraseña)"}), 400
+
+    user_correo = data['correo']
+    user_password = data['contraseña']
+
+    try:
+        # 2. Buscar usuario por correo electrónico (debe ser único)
+        stmt = select(User).filter_by(correo=user_correo)
+        user = db.session.execute(stmt).scalar_one_or_none()
+
+        # 3. Verificar si el usuario existe y si la contraseña coincide
+        if user and bcrypt.check_password_hash(user.contrasena, user_password):
+            # Éxito: Contraseña y usuario correctos
+            return jsonify({
+                "mensaje": "Inicio de sesión exitoso",
+                "usuario": user.to_dict()
+            }), 200
+        else:
+            # Fallo: Usuario no encontrado o contraseña incorrecta
+            return jsonify({"error": "Correo o contraseña inválidos"}), 401  # 401 Unauthorized
+
+    except Exception as e:
+        print(f"Error de autenticación: {e}")
+        return jsonify({"error": "Error interno del servidor", "detalle": str(e)}), 500
 
 
 # RUTA GET: Obtener un usuario por ID
 @app.route("/users/<int:id_user>")
 def get_user(id_user):
-    # Consulta la DB: SELECT * FROM usuario WHERE id_usuario = :id_user
     stmt = select(User).filter_by(id_usuario=id_user)
     user = db.session.execute(stmt).scalar_one_or_none()
 
@@ -80,7 +110,6 @@ def get_user(id_user):
 
     user_data = user.to_dict()
 
-    # Mantiene la lógica del query param
     query = request.args.get("query")
     if query:
         user_data["query"] = query
@@ -88,12 +117,10 @@ def get_user(id_user):
     return jsonify(user_data), 200
 
 
-# RUTA POST: Crear un nuevo usuario
+# RUTA POST: Crear un nuevo usuario (Registro)
 @app.route("/users/", methods=["POST"])
 def create_user():
     data = request.get_json()
-
-    # 1. Validar campos obligatorios (el JSON del cliente sigue usando 'contraseña')
     required_fields = ['nom_1', 'app_1', 'correo', 'contraseña']
     if any(field not in data for field in required_fields):
         return jsonify({"error": "Faltan campos obligatorios: nom_1, app_1, correo, contraseña"}), 400
@@ -109,7 +136,7 @@ def create_user():
             app_1=data["app_1"],
             app_2=data.get("app_2"),
             correo=data["correo"],
-            # CLAVE: Aquí se asigna al nombre de columna correcto (contrasena)
+            # CLAVE: Asignar al nombre de columna correcto (contrasena)
             contrasena=hashed_password
         )
 
@@ -122,17 +149,14 @@ def create_user():
 
     except Exception as e:
         db.session.rollback()
-        # Devuelve error si, por ejemplo, el correo ya existe o hay un error de conexión
         print(f"Database error: {e}")
         return jsonify({"error": "Error al crear el usuario. Revise la consola del servidor.", "detalle": str(e)}), 500
 
 
 if __name__ == '__main__':
     # NECESARIO: Inicializar el contexto de la aplicación para SQLAlchemy
-    with app.app_context():
-        # Crea las tablas si no existen (útil para la primera vez)
-        db.create_all()
 
-    # Obtener el puerto de la variable de entorno PORT (lo asigna Render)
+
+
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=True)
