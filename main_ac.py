@@ -4,13 +4,14 @@ import os
 from dotenv import load_dotenv
 from sqlalchemy import select, text  # Necesario para consultas modernas y SQL puro
 from flask_bcrypt import Bcrypt  # Necesario para hashear contraseñas
-
+from flask_cors import CORS
 # ==============================================
 # 1. CARGA DE VARIABLES DE ENTORNO
 load_dotenv()
 # ==============================================
 
 app = Flask(__name__)
+CORS(app)
 
 # --- 2. CONFIGURACIÓN DE CONEXIÓN ---
 DB_USER = os.environ.get("MYSQLUSER")
