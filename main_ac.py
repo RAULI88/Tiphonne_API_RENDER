@@ -2,8 +2,8 @@ from flask import Flask, jsonify, request
 from flask_sqlalchemy import SQLAlchemy
 import os
 from dotenv import load_dotenv
-from sqlalchemy import select, text  # Necesario para consultas modernas y SQL puro
-from flask_bcrypt import Bcrypt  # Necesario para hashear contraseñas
+from sqlalchemy import select, text, func, desc
+from flask_bcrypt import Bcrypt
 from flask_cors import CORS
 from datetime import datetime
 
@@ -29,32 +29,6 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
 bcrypt = Bcrypt(app)  # Inicializa Bcrypt
-
-
-# --- FUNCIÓN DE MIGRACIÓN/CORRECCIÓN DE TABLAS ---
-# Esta función es necesaria porque ya la tenías y corrige las estructuras al inicio.
-def fix_table_autoincrement():
-    """
-    Ejecuta comandos SQL puros para añadir la propiedad AUTO_INCREMENT
-    a las claves primarias de las tablas que lo requieren (subasta, puja, imagen).
-    """
-    tables_to_fix = [
-        ('usuario', 'id_usuario'),
-        ('subasta', 'id_subasta'),
-        ('puja', 'id_puja'),
-        ('imagen', 'id_imagen'),
-    ]
-
-    for table, column in tables_to_fix:
-        sql_command = text(f"ALTER TABLE {table} MODIFY {column} INT NOT NULL AUTO_INCREMENT;")
-        try:
-            with db.engine.connect() as connection:
-                connection.execute(sql_command)
-                connection.commit()
-                print(f"✅ Tabla '{table}' corregida con AUTO_INCREMENT.")
-        except Exception as e:
-            # Capturamos el error pero permitimos que la aplicación continúe
-            print(f"⚠️ Error al modificar la tabla '{table}': {e}")
 
 
 # --- 3. DEFINICIÓN DE MODELOS ---
@@ -83,7 +57,6 @@ class User(db.Model):
 class Subasta(db.Model):
     __tablename__ = 'subasta'
 
-    # id_subasta ya es primary_key y el fix_table se encarga del AUTO_INCREMENT
     id_subasta = db.Column(db.Integer, primary_key=True)
     id_usuario = db.Column(db.Integer, db.ForeignKey('usuario.id_usuario'), nullable=False)
 
@@ -94,32 +67,45 @@ class Subasta(db.Model):
 
     creador = db.relationship('User', backref=db.backref('mis_subastas', lazy=True))
 
+    def get_puja_actual(self):
+        """Calcula y retorna la puja más alta, incluyendo el ID del pujador."""
+
+        # Consulta para encontrar la PUJA MÁS ALTA (ordenamos por puja y fecha)
+        puja_mas_alta = db.session.execute(
+            select(Puja)
+            .filter(Puja.id_subasta == self.id_subasta)
+            .order_by(desc(Puja.puja), desc(Puja.fecha_puja))
+            .limit(1)
+        ).scalar_one_or_none()
+
+        if puja_mas_alta:
+            return {
+                "monto": str(puja_mas_alta.puja),
+                "id_usuario_pujador": puja_mas_alta.id_usuario,
+                "fecha": puja_mas_alta.fecha_puja.isoformat()
+            }
+
+        # Si no hay pujas, devolvemos el precio base
+        return {
+            "monto": str(self.precio_base),
+            "id_usuario_pujador": None,
+            "fecha": None
+        }
+
     def to_dict(self):
-        # Incluir la puja más alta y las imágenes si se necesitan
+        # Usar list comprehension para incluir imágenes
         imagenes_data = [img.to_dict() for img in self.imagenes]
 
         return {
             "id_subasta": self.id_subasta,
-            "id_usuario": self.id_usuario,
+            "id_usuario_creador": self.id_usuario,
             "fecha_ini": self.fecha_ini.isoformat() if self.fecha_ini else None,
             "fecha_fin": self.fecha_fin.isoformat() if self.fecha_fin else None,
             "descripcion": self.descripcion,
             "precio_base": str(self.precio_base),
-            "imagenes": imagenes_data,  # Añadir imágenes aquí
+            "imagenes": imagenes_data,
             "puja_actual": self.get_puja_actual()
         }
-
-    def get_puja_actual(self):
-        """Calcula y retorna la puja más alta para esta subasta."""
-        from sqlalchemy import func
-
-        # Consulta para encontrar la puja máxima
-        max_puja = db.session.query(func.max(Puja.puja)).filter(Puja.id_subasta == self.id_subasta).scalar()
-
-        if max_puja is None:
-            return str(self.precio_base)
-
-        return str(max_puja)
 
 
 # --- MODELO PUJA ---
@@ -139,7 +125,7 @@ class Puja(db.Model):
     def to_dict(self):
         return {
             "id_puja": self.id_puja,
-            "id_usuario": self.id_usuario,
+            "id_usuario_pujador": self.id_usuario,
             "id_subasta": self.id_subasta,
             "monto": str(self.puja),
             "fecha": self.fecha_puja.isoformat() if self.fecha_puja else None
@@ -155,7 +141,6 @@ class Imagen(db.Model):
     subasta = db.relationship('Subasta', backref=db.backref('imagenes', lazy=True))
 
     def to_dict(self):
-        # En una API real, esto sería una URL o un hash
         return {
             "id_imagen": self.id_imagen,
             "id_subasta": self.id_subasta,
@@ -279,10 +264,6 @@ def create_user():
         return jsonify({"error": "Error al crear el usuario. Revise la consola del servidor.", "detalle": str(e)}), 500
 
 
-# ======================================================
-# RUTAS DE SUBASTAS, PUJAS E IMÁGENES
-# ======================================================
-
 # RUTA GET & POST: Listar todas las subastas o Crear una nueva subasta
 @app.route("/subastas", methods=["GET", "POST"])
 def handle_subastas():
@@ -297,9 +278,12 @@ def handle_subastas():
             return jsonify({"error": "ID de usuario creador no encontrado"}), 404
 
         try:
+            # Validación de fecha (importante para TIMESTAMP de MySQL)
+            fecha_fin = datetime.fromisoformat(data['fecha_fin'])
+
             nueva_subasta = Subasta(
                 id_usuario=data['id_usuario'],
-                fecha_fin=datetime.fromisoformat(data['fecha_fin']),  # Convertir string a datetime
+                fecha_fin=fecha_fin,
                 descripcion=data['descripcion'],
                 precio_base=data['precio_base']
             )
@@ -314,7 +298,7 @@ def handle_subastas():
     else:  # GET
         # Obtener todas las subastas
         subastas = db.session.execute(select(Subasta)).scalars().all()
-        # Nota: Usamos list comprehension para que to_dict() incluya puja actual e imágenes
+        # Nota: to_dict() ahora incluye la puja más alta y el ID del pujador
         return jsonify([s.to_dict() for s in subastas]), 200
 
 
@@ -332,9 +316,11 @@ def handle_pujas(id_subasta):
             return jsonify({"error": "Faltan campos obligatorios para la puja"}), 400
 
         # Lógica de puja: Debe ser mayor que el precio base o la puja actual
-        puja_actual = db.session.get(Subasta, id_subasta).get_puja_actual()
-        if float(data['puja']) <= float(puja_actual):
-            return jsonify({"error": f"La puja debe ser mayor que el monto actual ({puja_actual})"}), 400
+        subasta = db.session.get(Subasta, id_subasta)
+        puja_actual_data = subasta.get_puja_actual()
+
+        if float(data['puja']) <= float(puja_actual_data['monto']):
+            return jsonify({"error": f"La puja debe ser mayor que el monto actual ({puja_actual_data['monto']})"}), 400
 
         try:
             nueva_puja = Puja(
@@ -364,14 +350,11 @@ def handle_imagenes(id_subasta):
         return jsonify({"error": "Subasta no encontrada"}), 404
 
     if request.method == "POST":
-        # Nota: datos_imagen debe ser un string codificado en base64 desde el cliente
         data = request.get_json()
         if not data or 'datos_imagen_base64' not in data:
             return jsonify({"error": "Faltan datos de la imagen (datos_imagen_base64)"}), 400
 
-        # En un entorno real, manejarías la codificación y validación aquí
         try:
-            # Convertir string (base64) a bytes (LargeBinary)
             datos_bytes = data['datos_imagen_base64'].encode('utf-8')
 
             nueva_imagen = Imagen(
@@ -398,9 +381,6 @@ if __name__ == '__main__':
     with app.app_context():
         # 1. Intenta crear tablas que aún no existen.
         db.create_all()
-
-        # 2. CLAVE: Llama a la función para CORREGIR el AUTO_INCREMENT en todas las tablas
-        fix_table_autoincrement()
 
     # Obtener el puerto de la variable de entorno PORT (lo asigna Render)
     port = int(os.environ.get('PORT', 5000))
