@@ -31,6 +31,32 @@ db = SQLAlchemy(app)
 bcrypt = Bcrypt(app)  # Inicializa Bcrypt
 
 
+# --- FUNCIÓN DE MIGRACIÓN/CORRECCIÓN DE TABLAS ---
+# Esta función es necesaria porque ya la tenías y corrige las estructuras al inicio.
+def fix_table_autoincrement():
+    """
+    Ejecuta comandos SQL puros para añadir la propiedad AUTO_INCREMENT
+    a las claves primarias de las tablas que lo requieren (subasta, puja, imagen).
+    """
+    tables_to_fix = [
+        ('usuario', 'id_usuario'),
+        ('subasta', 'id_subasta'),
+        ('puja', 'id_puja'),
+        ('imagen', 'id_imagen'),
+    ]
+
+    for table, column in tables_to_fix:
+        sql_command = text(f"ALTER TABLE {table} MODIFY {column} INT NOT NULL AUTO_INCREMENT;")
+        try:
+            with db.engine.connect() as connection:
+                connection.execute(sql_command)
+                connection.commit()
+                print(f"✅ Tabla '{table}' corregida con AUTO_INCREMENT.")
+        except Exception as e:
+            # Capturamos el error pero permitimos que la aplicación continúe
+            print(f"⚠️ Error al modificar la tabla '{table}': {e}")
+
+
 # --- 3. DEFINICIÓN DE MODELOS ---
 
 class User(db.Model):
@@ -41,11 +67,9 @@ class User(db.Model):
     app_1 = db.Column(db.String(50), nullable=False)
     app_2 = db.Column(db.String(50))
     correo = db.Column(db.String(120), unique=True, nullable=False)
-    # Columna que coincide con el nombre de la DB (contrasena, sin tilde)
     contrasena = db.Column(db.String(255), nullable=False)
 
     def to_dict(self):
-        """Método para serializar el objeto a diccionario/JSON"""
         return {
             "id": self.id_usuario,
             "nombre1": self.nom_1,
@@ -59,9 +83,8 @@ class User(db.Model):
 class Subasta(db.Model):
     __tablename__ = 'subasta'
 
-    # CLAVE: Ya no necesitamos autoincrement=True aquí si la DB ya fue corregida
+    # id_subasta ya es primary_key y el fix_table se encarga del AUTO_INCREMENT
     id_subasta = db.Column(db.Integer, primary_key=True)
-    # Foreign Key: Conexión con la tabla 'usuario', columna 'id_usuario'
     id_usuario = db.Column(db.Integer, db.ForeignKey('usuario.id_usuario'), nullable=False)
 
     fecha_ini = db.Column(db.DateTime, default=datetime.utcnow)
@@ -72,14 +95,31 @@ class Subasta(db.Model):
     creador = db.relationship('User', backref=db.backref('mis_subastas', lazy=True))
 
     def to_dict(self):
+        # Incluir la puja más alta y las imágenes si se necesitan
+        imagenes_data = [img.to_dict() for img in self.imagenes]
+
         return {
             "id_subasta": self.id_subasta,
             "id_usuario": self.id_usuario,
             "fecha_ini": self.fecha_ini.isoformat() if self.fecha_ini else None,
             "fecha_fin": self.fecha_fin.isoformat() if self.fecha_fin else None,
             "descripcion": self.descripcion,
-            "precio_base": str(self.precio_base)
+            "precio_base": str(self.precio_base),
+            "imagenes": imagenes_data,  # Añadir imágenes aquí
+            "puja_actual": self.get_puja_actual()
         }
+
+    def get_puja_actual(self):
+        """Calcula y retorna la puja más alta para esta subasta."""
+        from sqlalchemy import func
+
+        # Consulta para encontrar la puja máxima
+        max_puja = db.session.query(func.max(Puja.puja)).filter(Puja.id_subasta == self.id_subasta).scalar()
+
+        if max_puja is None:
+            return str(self.precio_base)
+
+        return str(max_puja)
 
 
 # --- MODELO PUJA ---
@@ -115,15 +155,16 @@ class Imagen(db.Model):
     subasta = db.relationship('Subasta', backref=db.backref('imagenes', lazy=True))
 
     def to_dict(self):
+        # En una API real, esto sería una URL o un hash
         return {
             "id_imagen": self.id_imagen,
             "id_subasta": self.id_subasta,
-            "url_o_datos": "Datos binarios (no mostrados en API)"
+            "datos_imagen_base64": self.datos_imagen.decode('utf-8')[:50] + '...' if self.datos_imagen else None
         }
 
 
 # ======================================================
-# RUTAS DE LA API (CRUD Y AUTENTICACIÓN)
+# RUTAS DE LA API (CRUD, SUBASTAS Y AUTENTICACIÓN)
 # ======================================================
 
 @app.route('/')
@@ -238,12 +279,128 @@ def create_user():
         return jsonify({"error": "Error al crear el usuario. Revise la consola del servidor.", "detalle": str(e)}), 500
 
 
+# ======================================================
+# RUTAS DE SUBASTAS, PUJAS E IMÁGENES
+# ======================================================
+
+# RUTA GET & POST: Listar todas las subastas o Crear una nueva subasta
+@app.route("/subastas", methods=["GET", "POST"])
+def handle_subastas():
+    if request.method == "POST":
+        data = request.get_json()
+        required_fields = ['id_usuario', 'fecha_fin', 'descripcion', 'precio_base']
+        if any(field not in data for field in required_fields):
+            return jsonify({"error": "Faltan campos obligatorios para la subasta"}), 400
+
+        # Opcional: Validar que el id_usuario existe
+        if not db.session.get(User, data['id_usuario']):
+            return jsonify({"error": "ID de usuario creador no encontrado"}), 404
+
+        try:
+            nueva_subasta = Subasta(
+                id_usuario=data['id_usuario'],
+                fecha_fin=datetime.fromisoformat(data['fecha_fin']),  # Convertir string a datetime
+                descripcion=data['descripcion'],
+                precio_base=data['precio_base']
+            )
+            db.session.add(nueva_subasta)
+            db.session.commit()
+            return jsonify(nueva_subasta.to_dict()), 201
+        except Exception as e:
+            db.session.rollback()
+            print(f"Error al crear subasta: {e}")
+            return jsonify({"error": "Error al crear subasta", "detalle": str(e)}), 500
+
+    else:  # GET
+        # Obtener todas las subastas
+        subastas = db.session.execute(select(Subasta)).scalars().all()
+        # Nota: Usamos list comprehension para que to_dict() incluya puja actual e imágenes
+        return jsonify([s.to_dict() for s in subastas]), 200
+
+
+# RUTA GET & POST: Manejar pujas
+@app.route("/subastas/<int:id_subasta>/pujas", methods=["GET", "POST"])
+def handle_pujas(id_subasta):
+    # Opcional: Validar que la subasta exista antes de continuar
+    if not db.session.get(Subasta, id_subasta):
+        return jsonify({"error": "Subasta no encontrada"}), 404
+
+    if request.method == "POST":
+        data = request.get_json()
+        required_fields = ['id_usuario', 'puja']
+        if any(field not in data for field in required_fields):
+            return jsonify({"error": "Faltan campos obligatorios para la puja"}), 400
+
+        # Lógica de puja: Debe ser mayor que el precio base o la puja actual
+        puja_actual = db.session.get(Subasta, id_subasta).get_puja_actual()
+        if float(data['puja']) <= float(puja_actual):
+            return jsonify({"error": f"La puja debe ser mayor que el monto actual ({puja_actual})"}), 400
+
+        try:
+            nueva_puja = Puja(
+                id_usuario=data['id_usuario'],
+                id_subasta=id_subasta,
+                puja=data['puja']
+            )
+            db.session.add(nueva_puja)
+            db.session.commit()
+            return jsonify(nueva_puja.to_dict()), 201
+        except Exception as e:
+            db.session.rollback()
+            print(f"Error al crear puja: {e}")
+            return jsonify({"error": "Error al crear puja", "detalle": str(e)}), 500
+
+    else:  # GET
+        # Obtener todas las pujas de una subasta específica
+        stmt = select(Puja).filter_by(id_subasta=id_subasta).order_by(Puja.puja.desc())
+        pujas = db.session.execute(stmt).scalars().all()
+        return jsonify([p.to_dict() for p in pujas]), 200
+
+
+# RUTA POST & GET: Manejar imágenes de una subasta
+@app.route("/subastas/<int:id_subasta>/imagenes", methods=["GET", "POST"])
+def handle_imagenes(id_subasta):
+    if not db.session.get(Subasta, id_subasta):
+        return jsonify({"error": "Subasta no encontrada"}), 404
+
+    if request.method == "POST":
+        # Nota: datos_imagen debe ser un string codificado en base64 desde el cliente
+        data = request.get_json()
+        if not data or 'datos_imagen_base64' not in data:
+            return jsonify({"error": "Faltan datos de la imagen (datos_imagen_base64)"}), 400
+
+        # En un entorno real, manejarías la codificación y validación aquí
+        try:
+            # Convertir string (base64) a bytes (LargeBinary)
+            datos_bytes = data['datos_imagen_base64'].encode('utf-8')
+
+            nueva_imagen = Imagen(
+                id_subasta=id_subasta,
+                datos_imagen=datos_bytes
+            )
+            db.session.add(nueva_imagen)
+            db.session.commit()
+            return jsonify({"mensaje": "Imagen subida con éxito", "id_imagen": nueva_imagen.id_imagen}), 201
+        except Exception as e:
+            db.session.rollback()
+            print(f"Error al subir imagen: {e}")
+            return jsonify({"error": "Error al subir imagen", "detalle": str(e)}), 500
+
+    else:  # GET
+        # Obtener todas las imágenes de una subasta específica
+        stmt = select(Imagen).filter_by(id_subasta=id_subasta)
+        imagenes = db.session.execute(stmt).scalars().all()
+        return jsonify([i.to_dict() for i in imagenes]), 200
+
+
 if __name__ == '__main__':
     # NECESARIO: Inicializar el contexto de la aplicación para SQLAlchemy
     with app.app_context():
         # 1. Intenta crear tablas que aún no existen.
-        # Ya que la corrección fue permanente, esta línea es suficiente.
         db.create_all()
+
+        # 2. CLAVE: Llama a la función para CORREGIR el AUTO_INCREMENT en todas las tablas
+        fix_table_autoincrement()
 
     # Obtener el puerto de la variable de entorno PORT (lo asigna Render)
     port = int(os.environ.get('PORT', 5000))
