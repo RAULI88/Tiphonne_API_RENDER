@@ -63,17 +63,18 @@ class Subasta(db.Model):
     fecha_ini = db.Column(db.DateTime, default=datetime.utcnow)
     fecha_fin = db.Column(db.DateTime)
     descripcion = db.Column(db.Text)
-    precio_base = db.Column(db.Numeric(10, 2))
 
-    # 1 = Activa, 0 = Baja
+    titulo = db.Column(db.String(255), nullable=False)  # Nueva columna para el título
+    precio_base = db.Column(db.Numeric(10, 2))
+    url_imgs = db.Column(db.Text)  # URLs separadas por coma
+
     estado = db.Column(db.Integer, default=1, nullable=False)
 
     creador = db.relationship('User', backref=db.backref('mis_subastas', lazy=True))
     pujas = db.relationship('Puja', backref='subasta_rel', lazy=True)
-    imagenes = db.relationship('Imagen', backref='subasta_rel', lazy=True)
+
 
     def get_puja_actual(self):
-        """Calcula y retorna la puja más alta."""
         puja_mas_alta = db.session.execute(
             select(Puja)
             .filter(Puja.id_subasta == self.id_subasta)
@@ -94,21 +95,25 @@ class Subasta(db.Model):
             "fecha": None
         }
 
+    
     def to_dict(self):
-        imagenes_data = [img.to_dict() for img in self.imagenes]
+        urls_list = self.url_imgs.split(',') if self.url_imgs else []
 
         return {
             "id_subasta": self.id_subasta,
             "id_usuario_creador": self.id_usuario,
+            "titulo": self.titulo,
             "fecha_ini": self.fecha_ini.isoformat() if self.fecha_ini else None,
             "fecha_fin": self.fecha_fin.isoformat() if self.fecha_fin else None,
             "descripcion": self.descripcion,
             "precio_base": str(self.precio_base),
             "estado": self.estado,
-            "imagenes": imagenes_data,
+
+            # ← aquí devolvemos EXACTAMENTE lo que quieres
+            "urls_imagenes": urls_list,
+
             "puja_actual": self.get_puja_actual()
         }
-
 
 class Puja(db.Model):
     __tablename__ = 'puja'
@@ -285,13 +290,20 @@ def handle_subastas():
 
         try:
             fecha_fin = datetime.fromisoformat(data['fecha_fin'])
+
+            # NUEVO: manejar lista de URLs
+            urls_list = data.get("urls_imagenes", [])
+            urls_string = ",".join(urls_list) if isinstance(urls_list, list) else ""
+
             nueva_subasta = Subasta(
                 id_usuario=data['id_usuario'],
                 fecha_fin=fecha_fin,
                 descripcion=data['descripcion'],
                 precio_base=data['precio_base'],
-                estado=1  # Por defecto activa al crear
+                estado=1,
+                urls_imagenes=urls_string  # NUEVO
             )
+
             db.session.add(nueva_subasta)
             db.session.commit()
             return jsonify(nueva_subasta.to_dict()), 201
@@ -304,7 +316,6 @@ def handle_subastas():
         stmt = select(Subasta).filter_by(estado=1)
         subastas = db.session.execute(stmt).scalars().all()
         return jsonify([s.to_dict() for s in subastas]), 200
-
 
 # RUTA PUT: Actualizar precio base de subasta
 @app.route("/subastas/<int:id_subasta>", methods=["PUT"])
