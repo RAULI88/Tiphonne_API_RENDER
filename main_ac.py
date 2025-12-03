@@ -65,12 +65,15 @@ class Subasta(db.Model):
     descripcion = db.Column(db.Text)
     precio_base = db.Column(db.Numeric(10, 2))
 
+    # 1 = Activa, 0 = Baja
+    estado = db.Column(db.Integer, default=1, nullable=False)
+
     creador = db.relationship('User', backref=db.backref('mis_subastas', lazy=True))
+    pujas = db.relationship('Puja', backref='subasta_rel', lazy=True)
+    imagenes = db.relationship('Imagen', backref='subasta_rel', lazy=True)
 
     def get_puja_actual(self):
-        """Calcula y retorna la puja más alta, incluyendo el ID del pujador."""
-
-        # Consulta para encontrar la PUJA MÁS ALTA (ordenamos por puja y fecha)
+        """Calcula y retorna la puja más alta."""
         puja_mas_alta = db.session.execute(
             select(Puja)
             .filter(Puja.id_subasta == self.id_subasta)
@@ -85,7 +88,6 @@ class Subasta(db.Model):
                 "fecha": puja_mas_alta.fecha_puja.isoformat()
             }
 
-        # Si no hay pujas, devolvemos el precio base
         return {
             "monto": str(self.precio_base),
             "id_usuario_pujador": None,
@@ -93,7 +95,6 @@ class Subasta(db.Model):
         }
 
     def to_dict(self):
-        # Usar list comprehension para incluir imágenes
         imagenes_data = [img.to_dict() for img in self.imagenes]
 
         return {
@@ -103,12 +104,12 @@ class Subasta(db.Model):
             "fecha_fin": self.fecha_fin.isoformat() if self.fecha_fin else None,
             "descripcion": self.descripcion,
             "precio_base": str(self.precio_base),
+            "estado": self.estado,
             "imagenes": imagenes_data,
             "puja_actual": self.get_puja_actual()
         }
 
 
-# --- MODELO PUJA ---
 class Puja(db.Model):
     __tablename__ = 'puja'
 
@@ -120,7 +121,6 @@ class Puja(db.Model):
     fecha_puja = db.Column(db.DateTime, default=datetime.utcnow)
 
     usuario_pujador = db.relationship('User', backref=db.backref('mis_pujas', lazy=True))
-    subasta_objetivo = db.relationship('Subasta', backref=db.backref('pujas_recibidas', lazy=True))
 
     def to_dict(self):
         return {
@@ -132,13 +132,11 @@ class Puja(db.Model):
         }
 
 
-# --- MODELO IMAGEN (Simplificado) ---
 class Imagen(db.Model):
     __tablename__ = 'imagen'
     id_imagen = db.Column(db.Integer, primary_key=True)
     id_subasta = db.Column(db.Integer, db.ForeignKey('subasta.id_subasta'), nullable=False)
     datos_imagen = db.Column(db.LargeBinary)
-    subasta = db.relationship('Subasta', backref=db.backref('imagenes', lazy=True))
 
     def to_dict(self):
         return {
@@ -149,7 +147,7 @@ class Imagen(db.Model):
 
 
 # ======================================================
-# RUTAS DE LA API (CRUD, SUBASTAS Y AUTENTICACIÓN)
+# RUTAS DE LA API
 # ======================================================
 
 @app.route('/')
@@ -157,21 +155,16 @@ def root():
     return jsonify("Hola jotos")
 
 
-# RUTA POST: INICIAR SESIÓN
 @app.route("/login", methods=["POST"])
 def login():
     data = request.get_json()
-
     if not data or 'correo' not in data or 'contraseña' not in data:
         return jsonify({"error": "Faltan campos (correo, contraseña)"}), 400
-
     user_correo = data['correo']
     user_password = data['contraseña']
-
     try:
         stmt = select(User).filter_by(correo=user_correo)
         user = db.session.execute(stmt).scalar_one_or_none()
-
         if user and bcrypt.check_password_hash(user.contrasena, user_password):
             return jsonify({
                 "mensaje": "Inicio de sesión exitoso",
@@ -179,71 +172,87 @@ def login():
             }), 200
         else:
             return jsonify({"error": "Correo o contraseña inválidos"}), 401
-
     except Exception as e:
         print(f"Error de autenticación: {e}")
         return jsonify({"error": "Error interno del servidor", "detalle": str(e)}), 500
 
 
-# RUTA POST: Cambiar contraseña por correo (SIN AUTENTICACIÓN)
 @app.route("/reset-password", methods=["POST"])
 def reset_password():
     data = request.get_json()
-
     if not data or 'correo' not in data or 'nueva_contraseña' not in data:
         return jsonify({"error": "Faltan campos (correo, nueva_contraseña)"}), 400
-
     user_correo = data['correo']
     new_password = data['nueva_contraseña']
-
     try:
         stmt = select(User).filter_by(correo=user_correo)
         user = db.session.execute(stmt).scalar_one_or_none()
-
         if user:
             hashed_password = bcrypt.generate_password_hash(new_password).decode('utf-8')
             user.contrasena = hashed_password
             db.session.commit()
-
             return jsonify({"mensaje": "Contraseña actualizada con éxito"}), 200
         else:
             return jsonify({"error": "Correo no encontrado"}), 404
-
     except Exception as e:
         db.session.rollback()
-        print(f"Error de actualización de contraseña: {e}")
         return jsonify({"error": "Error al actualizar la contraseña", "detalle": str(e)}), 500
 
 
-# RUTA GET: Obtener un usuario por ID
-@app.route("/users/<int:id_user>")
+@app.route("/users/<int:id_user>", methods=["GET"])
 def get_user(id_user):
     stmt = select(User).filter_by(id_usuario=id_user)
     user = db.session.execute(stmt).scalar_one_or_none()
-
     if user is None:
         return jsonify({"error": f"Usuario con ID {id_user} no encontrado"}), 404
-
     user_data = user.to_dict()
-
     query = request.args.get("query")
     if query:
         user_data["query"] = query
-
     return jsonify(user_data), 200
 
 
-# RUTA POST: Crear un nuevo usuario (Registro)
+# RUTA PUT: Modificar datos de usuario (NUEVA)
+@app.route("/users/<int:id_user>", methods=["PUT"])
+def update_user(id_user):
+    user = db.session.get(User, id_user)
+    if not user:
+        return jsonify({"error": f"Usuario con ID {id_user} no encontrado"}), 404
+
+    data = request.get_json()
+
+    # Actualizar campos solo si vienen en el JSON
+    if 'nom_1' in data:
+        user.nom_1 = data['nom_1']
+    if 'nom_2' in data:
+        user.nom_2 = data['nom_2']
+    if 'app_1' in data:
+        user.app_1 = data['app_1']
+    if 'app_2' in data:
+        user.app_2 = data['app_2']
+    if 'correo' in data:
+        # Opcional: Validar que el nuevo correo no exista ya
+        existing_user = db.session.execute(select(User).filter_by(correo=data['correo'])).scalar_one_or_none()
+        if existing_user and existing_user.id_usuario != id_user:
+            return jsonify({"error": "El correo ya está en uso por otro usuario"}), 400
+        user.correo = data['correo']
+
+    try:
+        db.session.commit()
+        return jsonify({"mensaje": "Usuario actualizado correctamente", "usuario": user.to_dict()}), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": "Error al actualizar usuario", "detalle": str(e)}), 500
+
+
 @app.route("/users/", methods=["POST"])
 def create_user():
     data = request.get_json()
     required_fields = ['nom_1', 'app_1', 'correo', 'contraseña']
     if any(field not in data for field in required_fields):
         return jsonify({"error": "Faltan campos obligatorios: nom_1, app_1, correo, contraseña"}), 400
-
     try:
         hashed_password = bcrypt.generate_password_hash(data["contraseña"]).decode('utf-8')
-
         new_user = User(
             nom_1=data["nom_1"],
             nom_2=data.get("nom_2"),
@@ -252,19 +261,17 @@ def create_user():
             correo=data["correo"],
             contrasena=hashed_password
         )
-
         db.session.add(new_user)
         db.session.commit()
-
         return jsonify(new_user.to_dict()), 201
-
     except Exception as e:
         db.session.rollback()
         print(f"Database error: {e}")
         return jsonify({"error": "Error al crear el usuario. Revise la consola del servidor.", "detalle": str(e)}), 500
 
 
-# RUTA GET & POST: Listar todas las subastas o Crear una nueva subasta
+# === RUTAS DE SUBASTAS ===
+
 @app.route("/subastas", methods=["GET", "POST"])
 def handle_subastas():
     if request.method == "POST":
@@ -273,19 +280,17 @@ def handle_subastas():
         if any(field not in data for field in required_fields):
             return jsonify({"error": "Faltan campos obligatorios para la subasta"}), 400
 
-        # Opcional: Validar que el id_usuario existe
         if not db.session.get(User, data['id_usuario']):
             return jsonify({"error": "ID de usuario creador no encontrado"}), 404
 
         try:
-            # Validación de fecha (importante para TIMESTAMP de MySQL)
             fecha_fin = datetime.fromisoformat(data['fecha_fin'])
-
             nueva_subasta = Subasta(
                 id_usuario=data['id_usuario'],
                 fecha_fin=fecha_fin,
                 descripcion=data['descripcion'],
-                precio_base=data['precio_base']
+                precio_base=data['precio_base'],
+                estado=1  # Por defecto activa al crear
             )
             db.session.add(nueva_subasta)
             db.session.commit()
@@ -296,18 +301,59 @@ def handle_subastas():
             return jsonify({"error": "Error al crear subasta", "detalle": str(e)}), 500
 
     else:  # GET
-        # Obtener todas las subastas
-        subastas = db.session.execute(select(Subasta)).scalars().all()
-        # Nota: to_dict() ahora incluye la puja más alta y el ID del pujador
+        stmt = select(Subasta).filter_by(estado=1)
+        subastas = db.session.execute(stmt).scalars().all()
         return jsonify([s.to_dict() for s in subastas]), 200
 
 
-# RUTA GET & POST: Manejar pujas
+# RUTA PUT: Actualizar precio base de subasta
+@app.route("/subastas/<int:id_subasta>", methods=["PUT"])
+def update_subasta(id_subasta):
+    subasta = db.session.get(Subasta, id_subasta)
+
+    if not subasta or subasta.estado == 0:
+        return jsonify({"error": "Subasta no encontrada o inactiva"}), 404
+
+    data = request.get_json()
+    if 'precio_base' not in data:
+        return jsonify({"error": "Falta el campo 'precio_base'"}), 400
+
+    try:
+        subasta.precio_base = data['precio_base']
+        db.session.commit()
+        return jsonify({"mensaje": "Precio base actualizado", "subasta": subasta.to_dict()}), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": "Error al actualizar subasta", "detalle": str(e)}), 500
+
+
+# RUTA PUT: Dar de baja una subasta
+@app.route("/subastas/<int:id_subasta>/baja", methods=["PUT"])
+def baja_subasta(id_subasta):
+    subasta = db.session.get(Subasta, id_subasta)
+
+    if not subasta:
+        return jsonify({"error": "Subasta no encontrada"}), 404
+
+    if subasta.estado == 0:
+        return jsonify({"mensaje": "La subasta ya estaba dada de baja"}), 200
+
+    try:
+        subasta.estado = 0
+        db.session.commit()
+        return jsonify(
+            {"mensaje": "Subasta dada de baja correctamente (Borrado Lógico)", "id_subasta": id_subasta}), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": "Error al dar de baja la subasta", "detalle": str(e)}), 500
+
+
 @app.route("/subastas/<int:id_subasta>/pujas", methods=["GET", "POST"])
 def handle_pujas(id_subasta):
-    # Opcional: Validar que la subasta exista antes de continuar
-    if not db.session.get(Subasta, id_subasta):
-        return jsonify({"error": "Subasta no encontrada"}), 404
+    subasta = db.session.get(Subasta, id_subasta)
+
+    if not subasta or subasta.estado == 0:
+        return jsonify({"error": "Subasta no encontrada o inactiva"}), 404
 
     if request.method == "POST":
         data = request.get_json()
@@ -315,8 +361,6 @@ def handle_pujas(id_subasta):
         if any(field not in data for field in required_fields):
             return jsonify({"error": "Faltan campos obligatorios para la puja"}), 400
 
-        # Lógica de puja: Debe ser mayor que el precio base o la puja actual
-        subasta = db.session.get(Subasta, id_subasta)
         puja_actual_data = subasta.get_puja_actual()
 
         if float(data['puja']) <= float(puja_actual_data['monto']):
@@ -337,17 +381,17 @@ def handle_pujas(id_subasta):
             return jsonify({"error": "Error al crear puja", "detalle": str(e)}), 500
 
     else:  # GET
-        # Obtener todas las pujas de una subasta específica
         stmt = select(Puja).filter_by(id_subasta=id_subasta).order_by(Puja.puja.desc())
         pujas = db.session.execute(stmt).scalars().all()
         return jsonify([p.to_dict() for p in pujas]), 200
 
 
-# RUTA POST & GET: Manejar imágenes de una subasta
 @app.route("/subastas/<int:id_subasta>/imagenes", methods=["GET", "POST"])
 def handle_imagenes(id_subasta):
-    if not db.session.get(Subasta, id_subasta):
-        return jsonify({"error": "Subasta no encontrada"}), 404
+    subasta = db.session.get(Subasta, id_subasta)
+
+    if not subasta or subasta.estado == 0:
+        return jsonify({"error": "Subasta no encontrada o inactiva"}), 404
 
     if request.method == "POST":
         data = request.get_json()
@@ -356,7 +400,6 @@ def handle_imagenes(id_subasta):
 
         try:
             datos_bytes = data['datos_imagen_base64'].encode('utf-8')
-
             nueva_imagen = Imagen(
                 id_subasta=id_subasta,
                 datos_imagen=datos_bytes
@@ -370,18 +413,14 @@ def handle_imagenes(id_subasta):
             return jsonify({"error": "Error al subir imagen", "detalle": str(e)}), 500
 
     else:  # GET
-        # Obtener todas las imágenes de una subasta específica
         stmt = select(Imagen).filter_by(id_subasta=id_subasta)
         imagenes = db.session.execute(stmt).scalars().all()
         return jsonify([i.to_dict() for i in imagenes]), 200
 
 
 if __name__ == '__main__':
-    # NECESARIO: Inicializar el contexto de la aplicación para SQLAlchemy
     with app.app_context():
-        # 1. Intenta crear tablas que aún no existen.
         db.create_all()
 
-    # Obtener el puerto de la variable de entorno PORT (lo asigna Render)
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=True)
