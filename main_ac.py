@@ -67,7 +67,7 @@ class Subasta(db.Model):
     estado = db.Column(db.Integer, default=1, nullable=False)
     url_imgs = db.Column(db.String(999))  # URLs separadas por coma
     titulo = db.Column(db.String(100), nullable=False)  # Nueva columna para el título
-
+    categorias = db.Column(db.String(255))
 
 
 
@@ -100,6 +100,7 @@ class Subasta(db.Model):
 
     def to_dict(self):
         urls_list = self.url_imgs.split(',') if self.url_imgs else []
+        categorias_list = self.categorias.split(',') if self.categorias else []
 
         return {
             "id_subasta": self.id_subasta,
@@ -107,13 +108,13 @@ class Subasta(db.Model):
             "titulo": self.titulo,
             "fecha_ini": self.fecha_ini.isoformat() if self.fecha_ini else None,
             "fecha_fin": self.fecha_fin.isoformat() if self.fecha_fin else None,
-            "descripcion": self.descripcion,
+            "descripcion": self.descripcion,    
             "precio_base": str(self.precio_base),
             "estado": self.estado,
 
             # ← aquí devolvemos EXACTAMENTE lo que quieres
             "urls_imagenes": urls_list,
-
+            "categorias" : categorias_list,
             "puja_actual": self.get_puja_actual()
         }
 
@@ -296,6 +297,8 @@ def handle_subastas():
             # NUEVO: manejar lista de URLs
             urls_list = data.get("urls_imgs", [])
             urls_string = ",".join(urls_list) if isinstance(urls_list, list) else ""
+            categorias_list = data.get("categorias", [])
+            categorias_string = ",".join(categorias_list) if isinstance(categorias_list, list) else ""
 
             nueva_subasta = Subasta(
                 id_usuario=data['id_usuario'],
@@ -304,6 +307,7 @@ def handle_subastas():
                 precio_base=data['precio_base'],
                 estado=1,
                 url_imgs=urls_string, # NUEVO
+                categorias=categorias_string,
                 titulo = data['titulo']
 
 
