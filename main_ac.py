@@ -63,12 +63,14 @@ class Subasta(db.Model):
     fecha_ini = db.Column(db.DateTime, default=datetime.utcnow)
     fecha_fin = db.Column(db.DateTime)
     descripcion = db.Column(db.Text)
-
-    titulo = db.Column(db.String(255), nullable=False)  # Nueva columna para el título
     precio_base = db.Column(db.Numeric(10, 2))
-    url_imgs = db.Column(db.Text)  # URLs separadas por coma
-
     estado = db.Column(db.Integer, default=1, nullable=False)
+    url_imgs = db.Column(db.String(999))  # URLs separadas por coma
+    titulo = db.Column(db.String(100), nullable=False)  # Nueva columna para el título
+
+
+
+
 
     creador = db.relationship('User', backref=db.backref('mis_subastas', lazy=True))
     pujas = db.relationship('Puja', backref='subasta_rel', lazy=True)
@@ -95,7 +97,7 @@ class Subasta(db.Model):
             "fecha": None
         }
 
-    
+
     def to_dict(self):
         urls_list = self.url_imgs.split(',') if self.url_imgs else []
 
@@ -157,7 +159,7 @@ class Imagen(db.Model):
 
 @app.route('/')
 def root():
-    return jsonify("Hola jotos")
+    return jsonify("Hola")
 
 
 @app.route("/login", methods=["POST"])
@@ -281,7 +283,7 @@ def create_user():
 def handle_subastas():
     if request.method == "POST":
         data = request.get_json()
-        required_fields = ['id_usuario', 'fecha_fin', 'descripcion', 'precio_base']
+        required_fields = ['id_usuario', 'fecha_fin', 'descripcion', 'precio_base', 'titulo']
         if any(field not in data for field in required_fields):
             return jsonify({"error": "Faltan campos obligatorios para la subasta"}), 400
 
@@ -292,7 +294,7 @@ def handle_subastas():
             fecha_fin = datetime.fromisoformat(data['fecha_fin'])
 
             # NUEVO: manejar lista de URLs
-            urls_list = data.get("urls_imagenes", [])
+            urls_list = data.get("urls_imgs", [])
             urls_string = ",".join(urls_list) if isinstance(urls_list, list) else ""
 
             nueva_subasta = Subasta(
@@ -301,7 +303,10 @@ def handle_subastas():
                 descripcion=data['descripcion'],
                 precio_base=data['precio_base'],
                 estado=1,
-                urls_imagenes=urls_string  # NUEVO
+                url_imgs=urls_string, # NUEVO
+                titulo = data['titulo']
+
+
             )
 
             db.session.add(nueva_subasta)
