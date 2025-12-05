@@ -335,16 +335,105 @@ def update_subasta(id_subasta):
         return jsonify({"error": "Subasta no encontrada o inactiva"}), 404
 
     data = request.get_json()
-    if 'precio_base' not in data:
-        return jsonify({"error": "Falta el campo 'precio_base'"}), 400
 
+    # SE NECESITA validar qué usuario está haciendo los cambios
+    if "id_usuario" not in data:
+        return jsonify({"error": "Debe enviar 'id_usuario' para validar permisos"}), 400
+
+    # Validar que el usuario coincida con el creador de la subasta
+    if data["id_usuario"] != subasta.id_usuario:
+        return jsonify({"error": "No tiene permiso para modificar esta subasta"}), 403
+
+    # CAMPOS PROHIBIDOS
+    CAMPOS_NO_EDITABLES = {"id_subasta", "id_usuario", "fecha_ini", "estado"}
+
+    # CAMPOS QUE SÍ SE PUEDEN EDITAR
+    CAMPOS_EDITABLES = {
+        "fecha_fin",
+        "descripcion",
+        "precio_base",
+        "url_imgs",
+        "titulo",
+        "categorias",
+    }
+
+    # RECORRER cada campo enviado
+    for campo, valor in data.items():
+
+        # Ignorar id_usuario porque ya lo validamos antes
+        if campo == "id_usuario":
+            continue
+
+        # Si intenta modificar un campo prohibido → ERROR
+        if campo in CAMPOS_NO_EDITABLES:
+            return jsonify({"error": f"No se puede modificar el campo '{campo}'"}), 400
+
+        if campo in CAMPOS_EDITABLES:
+
+            # -------- VALIDACIONES --------
+
+            # precio_base debe ser numérico
+            if campo == "precio_base":
+                try:
+                    float(valor)
+                except:
+                    return jsonify({"error": "precio_base debe ser numérico"}), 400
+                subasta.precio_base = valor
+
+            # fecha_fin debe ser fecha válida y mayor a fecha_ini
+            elif campo == "fecha_fin":
+                try:
+                    fecha_fin = datetime.fromisoformat(valor)
+                except:
+                    return jsonify({"error": "Formato incorrecto de fecha_fin"}), 400
+
+                if fecha_fin < subasta.fecha_ini:
+                    return jsonify({
+                        "error": "fecha_fin no puede ser menor que fecha_ini"
+                    }), 400
+
+                subasta.fecha_fin = fecha_fin
+
+            # título no puede estar vacío
+            elif campo == "titulo":
+                if not isinstance(valor, str) or valor.strip() == "":
+                    return jsonify({"error": "El título no puede estar vacío"}), 400
+                subasta.titulo = valor
+
+            # listas convertidas a string
+            elif campo == "url_imgs":
+                if isinstance(valor, list):
+                    subasta.url_imgs = ",".join(valor)
+                elif isinstance(valor, str):
+                    subasta.url_imgs = valor
+                else:
+                    return jsonify({"error": "url_imgs debe ser lista o string"}), 400
+
+            elif campo == "categorias":
+                if isinstance(valor, list):
+                    subasta.categorias = ",".join(valor)
+                elif isinstance(valor, str):
+                    subasta.categorias = valor
+                else:
+                    return jsonify({"error": "categorias debe ser lista o string"}), 400
+
+            else:
+                setattr(subasta, campo, valor)
+
+    # GUARDAR CAMBIOS
     try:
-        subasta.precio_base = data['precio_base']
         db.session.commit()
-        return jsonify({"mensaje": "Precio base actualizado", "subasta": subasta.to_dict()}), 200
+        return jsonify({
+            "mensaje": "Subasta actualizada correctamente",
+            "subasta": subasta.to_dict()
+        }), 200
+
     except Exception as e:
         db.session.rollback()
-        return jsonify({"error": "Error al actualizar subasta", "detalle": str(e)}), 500
+        return jsonify({
+            "error": "Error al actualizar subasta",
+            "detalle": str(e)
+        }), 500
 
 
 # RUTA PUT: Dar de baja una subasta
