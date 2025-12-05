@@ -100,7 +100,7 @@ class Subasta(db.Model):
 
     def to_dict(self):
         urls_list = self.url_imgs.split(',') if self.url_imgs else []
-        categorias_list = self.categorias.split(',') if self.categorias else []
+        categoria_list = self.categorias.split(',') if self.categorias else []
 
         return {
             "id_subasta": self.id_subasta,
@@ -108,13 +108,13 @@ class Subasta(db.Model):
             "titulo": self.titulo,
             "fecha_ini": self.fecha_ini.isoformat() if self.fecha_ini else None,
             "fecha_fin": self.fecha_fin.isoformat() if self.fecha_fin else None,
-            "descripcion": self.descripcion,    
+            "descripcion": self.descripcion,
             "precio_base": str(self.precio_base),
             "estado": self.estado,
 
             # ← aquí devolvemos EXACTAMENTE lo que quieres
             "urls_imagenes": urls_list,
-            "categorias" : categorias_list,
+            "categorias" : categoria_list,
             "puja_actual": self.get_puja_actual()
         }
 
