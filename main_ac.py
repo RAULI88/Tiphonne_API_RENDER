@@ -45,11 +45,11 @@ class User(db.Model):
 
     def to_dict(self):
         return {
-            "id": self.id_usuario,
-            "nombre1": self.nom_1,
-            "nombre2": self.nom_2,
-            "apellido1": self.app_1,
-            "apellido2": self.app_2,
+            "id_usuario": self.id_usuario,
+            "nom_1": self.nom_1,
+            "nom_2": self.nom_2,
+            "app_1": self.app_1,
+            "app_2": self.app_2,
             "correo": self.correo,
         }
 
