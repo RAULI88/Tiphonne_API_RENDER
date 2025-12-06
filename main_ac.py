@@ -321,10 +321,18 @@ def handle_subastas():
             print(f"Error al crear subasta: {e}")
             return jsonify({"error": "Error al crear subasta", "detalle": str(e)}), 500
 
+
     else:  # GET
-        stmt = select(Subasta).filter_by(estado=1)
+        # Leer parámetro opcional de la URL
+        estado = request.args.get("estado", default="1")
+        # Validar que estado sea 0 o 1
+        if estado not in ["0", "1"]:
+            return jsonify({"error": "El parámetro 'estado' solo puede ser 0 (inactivas) o 1 (activas)"}), 400
+        estado = int(estado)
+        stmt = select(Subasta).filter_by(estado=estado)
         subastas = db.session.execute(stmt).scalars().all()
         return jsonify([s.to_dict() for s in subastas]), 200
+
 
 # RUTA PUT: Actualizar precio base de subasta
 @app.route("/subastas/<int:id_subasta>", methods=["PUT"])
